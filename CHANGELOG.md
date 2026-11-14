@@ -34,3 +34,11 @@
 
 - По запросу пользователя удалён расчёт объёма. Динамическое сообщение включает инструмент, M5, направление, вход-ориентир, SL/TP и время NY/UTC.
 - Добавлена инструкция Telegram через Vela. Подключение и компиляция не проверены.
+
+## v1.2 three targets - 2026-11-14
+
+- Separate fixed-size signal backtest: 3 units, one unit at each 2R/3R/4R target, shared unchanged stop.
+- Synthetic initial capital USD 1,000,000 avoids the former cash cap; not a USD 500 account simulation.
+- Brackets submitted with entry; levels based on signal close, next-bar fill may change realized R. calc_on_order_fills disabled.
+- Telegram alert() message contains levels without quantity. Date filter must be disabled for live signals after test end.
+- Compilation and platform backtest unverified. Fees/spread require configuration. Partial exits may count as separate closed trades.
