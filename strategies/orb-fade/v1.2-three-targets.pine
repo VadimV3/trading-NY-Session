@@ -1,0 +1,117 @@
+//@version=6
+strategy("NY ORB Fade v1.2 — TP 2R / 3R / 4R",
+     overlay=true, initial_capital=1000000, currency=currency.USD,
+     pyramiding=0, margin_long=100, margin_short=100,
+     calc_on_order_fills=false, calc_on_every_tick=false,
+     process_orders_on_close=false, slippage=2)
+
+string tz = "America/New_York"
+int fromDate = input.time(timestamp("14 Aug 2026 00:00 -0400"), "Начало теста")
+int toDate = input.time(timestamp("14 Nov 2026 23:59 -0500"), "Конец теста")
+bool dateFilter = input.bool(true, "Ограничить даты (выключить для живых сигналов)")
+int waitBars = input.int(6, "Ожидание возврата, свечей", minval=1)
+int bufferTicks = input.int(2, "Буфер стопа, тиков", minval=1)
+float r1 = input.float(2, "TP1, R", minval=0.1)
+float r2 = input.float(3, "TP2, R", minval=0.1)
+float r3 = input.float(4, "TP3, R", minval=0.1)
+float partQty = input.float(1, "Тестовый объём каждой трети", minval=0.000001)
+
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Используйте стандартные свечи M5")
+if not (r1 < r2 and r2 < r3)
+    runtime.error("Требуется TP1 < TP2 < TP3")
+
+bool inDates = not dateFilter or (time >= fromDate and time <= toDate)
+bool inOR = not na(time(timeframe.period, "0930-0945:23456", tz))
+bool window = not na(time(timeframe.period, "0945-1030:23456", tz))
+bool exitTime = not na(time(timeframe.period, "1125-1130:23456", tz))
+int day = year(time, tz)*10000 + month(time, tz)*100 + dayofmonth(time, tz)
+var int orDay = na
+var int bars = 0
+var int phase = 2
+var int side = 0
+var int breakBar = na
+var float hi = na
+var float lo = na
+var float extreme = na
+var float entryRef = na
+var float sl = na
+var float tp1 = na
+var float tp2 = na
+var float tp3 = na
+bool buy = false
+bool sell = false
+
+if inOR and (na(orDay) or day != orDay)
+    orDay := day
+    bars := 1
+    hi := high
+    lo := low
+    phase := strategy.position_size == 0 ? 0 : 2
+    side := 0
+    breakBar := na
+    extreme := na
+    if strategy.position_size == 0
+        entryRef := na
+        sl := na
+        tp1 := na
+        tp2 := na
+        tp3 := na
+else if inOR
+    hi := math.max(hi, high)
+    lo := math.min(lo, low)
+    bars += 1
+
+bool ready = bars == 3 and orDay == day and not inOR and hi > lo
+if ready and window and inDates and barstate.isconfirmed and strategy.position_size == 0
+    if phase == 0
+        if close > hi or close < lo
+            side := close > hi ? 1 : -1
+            extreme := side == 1 ? high : low
+            breakBar := bar_index
+            phase := 1
+    else if phase == 1
+        int elapsed = bar_index - breakBar
+        if elapsed > waitBars
+            phase := 2
+        else if elapsed > 0
+            extreme := side == 1 ? math.max(extreme, high) : math.min(extreme, low)
+            bool crossedOtherSide = side == 1 ? close <= lo : close >= hi
+            if crossedOtherSide
+                phase := 2
+            else if close > lo and close < hi
+                int dir = side == 1 ? -1 : 1
+                entryRef := close
+                sl := extreme - dir * bufferTicks * syminfo.mintick
+                float risk = math.abs(entryRef - sl)
+                if risk > syminfo.mintick
+                    tp1 := entryRef + dir * r1 * risk
+                    tp2 := entryRef + dir * r2 * risk
+                    tp3 := entryRef + dir * r3 * risk
+                    buy := dir == 1
+                    sell := dir == -1
+                    strategy.entry("ORB", dir == 1 ? strategy.long : strategy.short, qty=3*partQty)
+                    // Three independent brackets, each reserving one third.
+                    // Submitted with entry; no post-fill historical recalculation.
+                    strategy.exit("TP1 / SL", "ORB", qty=partQty, stop=sl, limit=tp1, oca_name="bracket1")
+                    strategy.exit("TP2 / SL", "ORB", qty=partQty, stop=sl, limit=tp2, oca_name="bracket2")
+                    strategy.exit("TP3 / SL", "ORB", qty=partQty, stop=sl, limit=tp3, oca_name="bracket3")
+                    string message = "ORB FADE | " + (buy ? "LONG" : "SHORT") + "\nИнструмент: " + syminfo.tickerid + "\nТаймфрейм: M5" + "\nВход-ориентир: " + str.tostring(entryRef, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick) + "\nTP1 (" + str.tostring(r1) + "R): " + str.tostring(tp1, format.mintick) + "\nTP2 (" + str.tostring(r2) + "R): " + str.tostring(tp2, format.mintick) + "\nTP3 (" + str.tostring(r3) + "R): " + str.tostring(tp3, format.mintick) + "\nВремя NY: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", tz) + "\nОбъём выбирается вручную. Цены источника графика."
+                    alert(message, alert.freq_once_per_bar_close)
+                phase := 2
+
+if ready and not window
+    phase := 2
+if exitTime and barstate.isconfirmed
+    strategy.cancel_all()
+    strategy.close_all(comment="11:30 NY", immediately=true)
+
+plot(inOR or ready ? hi : na, "OR High", color.orange, 2, plot.style_linebr)
+plot(inOR or ready ? lo : na, "OR Low", color.aqua, 2, plot.style_linebr)
+plot(entryRef, "Вход-ориентир", color.gray, 1, plot.style_linebr)
+plot(sl, "SL", color.red, 2, plot.style_linebr)
+plot(tp1, "TP1", color.lime, 1, plot.style_linebr)
+plot(tp2, "TP2", color.green, 2, plot.style_linebr)
+plot(tp3, "TP3", color.teal, 2, plot.style_linebr)
+plotshape(buy, "LONG", shape.triangleup, location.belowbar, color.lime, text="LONG")
+plotshape(sell, "SHORT", shape.triangledown, location.abovebar, color.red, text="SHORT")
