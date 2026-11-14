@@ -1,0 +1,28 @@
+{
+  "status": "source_defaults_not_confirmed_run_settings",
+  "version": "v1.0",
+  "timezone": "America/New_York",
+  "timeframe": "M5",
+  "startDate": "2026-08-14T00:00:00-04:00",
+  "endDate": "2026-11-14T23:59:00-05:00",
+  "rr": 2,
+  "qty": 1,
+  "waitBars": 6,
+  "bufferTicks": 2,
+  "direction": "Both",
+  "opening_range": "0930-0945:23456",
+  "entry_window": "0945-1030:23456",
+  "exit_bar": "1125-1130:23456",
+  "initial_capital": 100000,
+  "margin_long": 10,
+  "margin_short": 10,
+  "pyramiding": 0,
+  "process_orders_on_close": false,
+  "calc_on_order_fills": true,
+  "calc_on_every_tick": false,
+  "use_bar_magnifier": false,
+  "slippage_ticks": 2,
+  "commission": "not explicitly specified in source",
+  "confirmed_run_settings": null
+}
+

@@ -1,0 +1,5 @@
+eb338706d8e5fda9865cb8c710a07963bc17843ca925049dc41a20c4549bbb2d  strategies/orb-fade/v1.0.pine
+993cc0f184f54b20a104d3df28223a13375fabccf601011dd3a7037e940bdc20  config/v1.0-defaults.json
+2fe9bd249359d2bf06b7f7b6adfad919dec54cce78dd36770c3344837e850631  backtests/qqq/2026-08-18_2026-11-11.md
+1395923ffa5f515b2a3facc851b1fccc01f73a552649f38481f898566da6a55a  backtests/qqq/2026-08-18_2026-11-11.csv
+801f2999f69b0f0ee0d3ad2e77d6b53efef4daf0a7b25aca0ad1ac21463c7aa9  backtests/qqq/evidence/baseline.png
