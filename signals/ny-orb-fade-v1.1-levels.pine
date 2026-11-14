@@ -1,0 +1,367 @@
+//@version=6
+indicator("NY ORB Fade Signals v1.1 Levels Only", overlay = true)
+
+// =====================================
+// SETTINGS
+// =====================================
+
+string TZ = "America/New_York"
+
+float rr = input.float(2, "Target R", minval = 0.5, step = 0.25)
+bool useDates = input.bool(false, "Limit signals to backtest dates")
+int startDate = input.time(timestamp("14 Aug 2026 00:00 -0400"), "Start")
+int endDate = input.time(timestamp("14 Nov 2026 23:59 -0500"), "End")
+
+// Reference entry is the confirmed signal close, not an executed fill.
+signalMessage(string side, float stop) =>
+    float distance = math.abs(close - stop)
+    float target = side == "LONG" ? close + rr * distance : close - rr * distance
+    "ORB FADE | " + side +
+         "\nИнструмент: " + syminfo.tickerid +
+         "\nТаймфрейм: M5" +
+         "\nВход-ориентир: " + str.tostring(close, format.mintick) +
+         "\nСтоп: " + str.tostring(stop, format.mintick) +
+         "\nЦель: " + str.tostring(target, format.mintick) +
+         "\nЦель R: " + str.tostring(rr) +
+         "\nРасстояние до стопа: " + str.tostring(distance, format.mintick) +
+         "\nВремя NY: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", TZ) +
+         "\nВремя UTC: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", "UTC") +
+         "\nСигнал по закрытию свечи. Объём выбирается вручную." +
+         "\nЦены относятся к указанному источнику котировок."
+
+int waitBars = input.int(
+     6, "Maximum Wait for Return (M5 bars)",
+     minval = 1, maxval = 20)
+
+int bufferTicks = input.int(
+     2, "Stop Buffer (ticks)",
+     minval = 1)
+
+string direction = input.string(
+     "Both", "Trade Direction",
+     options = ["Both", "Long only", "Short only"])
+
+// =====================================
+// TIMEFRAME AND SESSION
+// =====================================
+
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Use standard M5 candles")
+
+bool inDate = not useDates or (time >= startDate and time <= endDate)
+
+bool inOR = not na(time(
+     timeframe.period, "0930-0945:23456", TZ))
+
+bool entryWindow = not na(time(
+     timeframe.period, "0945-1030:23456", TZ))
+
+bool exitBar = not na(time(
+     timeframe.period, "1125-1130:23456", TZ))
+
+bool newOR = inOR and not inOR[1]
+
+int nyDate = year(time, TZ) * 10000 +
+     month(time, TZ) * 100 +
+     dayofmonth(time, TZ)
+
+// =====================================
+// STATE
+//
+// 0 = Waiting for breakout
+// 1 = Waiting for return inside OR
+// 2 = Finished for the day
+//
+// breakSide:
+//  1 = Broke OR High
+// -1 = Broke OR Low
+// =====================================
+
+var float orHigh = na
+var float orLow = na
+
+var int orBars = 0
+var int orDate = na
+
+var int phase = 2
+var int breakSide = 0
+var int breakoutBar = na
+
+var float sweepHigh = na
+var float sweepLow = na
+
+var float stopPrice = na
+var float takeProfit = na
+
+var int sessions = 0
+var int completedOR = 0
+var int breakouts = 0
+var int returns = 0
+var int signals = 0
+
+bool breakUpMarker = false
+bool breakDownMarker = false
+bool buyMarker = false
+bool sellMarker = false
+
+// =====================================
+// BUILD OPENING RANGE
+// =====================================
+
+if newOR
+    orHigh := high
+    orLow := low
+
+    orBars := 1
+    orDate := nyDate
+
+    phase := 0
+    breakSide := 0
+    breakoutBar := na
+
+    sweepHigh := na
+    sweepLow := na
+
+    stopPrice := na
+    takeProfit := na
+
+    if inDate
+        sessions += 1
+
+else if inOR
+    orHigh := math.max(orHigh, high)
+    orLow := math.min(orLow, low)
+    orBars += 1
+
+bool ready = orBars == 3 and
+     orDate == nyDate and
+     not inOR and
+     orHigh > orLow
+
+if ready and inOR[1] and inDate
+    completedOR += 1
+
+float buffer = syminfo.mintick * bufferTicks
+
+// =====================================
+// SIGNAL ENGINE
+// =====================================
+
+bool canTrade = ready and
+     inDate and
+     entryWindow and
+     barstate.isconfirmed
+
+if canTrade
+
+    // PHASE 0: LOOK FOR INITIAL BREAKOUT
+    if phase == 0
+
+        if close > orHigh and direction != "Long only"
+
+            breakSide := 1
+            breakoutBar := bar_index
+            sweepHigh := high
+
+            phase := 1
+            breakouts += 1
+            breakUpMarker := true
+
+        else if close < orLow and direction != "Short only"
+
+            breakSide := -1
+            breakoutBar := bar_index
+            sweepLow := low
+
+            phase := 1
+            breakouts += 1
+            breakDownMarker := true
+
+    // PHASE 1: WAIT FOR FALSE BREAKOUT
+    else if phase == 1
+
+        int elapsed = bar_index - breakoutBar
+
+        if elapsed > waitBars
+            phase := 2
+
+        else if elapsed > 0
+
+            // PRICE BROKE ABOVE OR HIGH
+            // LOOK FOR SHORT AFTER RETURN
+            if breakSide == 1
+
+                sweepHigh := math.max(sweepHigh, high)
+
+                bool insideRange =
+                     close < orHigh and close > orLow
+
+                bool oppositeBreak = close <= orLow
+
+                if oppositeBreak
+                    phase := 2
+
+                else if insideRange
+
+                    returns += 1
+
+                    stopPrice := sweepHigh + buffer
+
+                    if stopPrice > close + syminfo.mintick
+
+                        takeProfit := close - rr * math.abs(close - stopPrice)
+                        alert(signalMessage("SHORT", stopPrice), alert.freq_once_per_bar_close)
+
+                        sellMarker := true
+                        signals += 1
+
+                    phase := 2
+
+            // PRICE BROKE BELOW OR LOW
+            // LOOK FOR LONG AFTER RETURN
+            else if breakSide == -1
+
+                sweepLow := math.min(sweepLow, low)
+
+                bool insideRange =
+                     close > orLow and close < orHigh
+
+                bool oppositeBreak = close >= orHigh
+
+                if oppositeBreak
+                    phase := 2
+
+                else if insideRange
+
+                    returns += 1
+
+                    stopPrice := sweepLow - buffer
+
+                    if stopPrice < close - syminfo.mintick
+
+                        takeProfit := close + rr * math.abs(close - stopPrice)
+                        alert(signalMessage("LONG", stopPrice), alert.freq_once_per_bar_close)
+
+                        buyMarker := true
+                        signals += 1
+
+                    phase := 2
+
+// End pending setup after trading window
+if ready and not entryWindow and phase != 2
+    phase := 2
+
+// No simulated position or exit fills. Levels are reference values.
+// The 11:30 reminder is deliberately disabled unless requested.
+bool exitReminder = input.bool(false, "11:30 NY reminder (even without a position)")
+if exitReminder and exitBar and inDate and barstate.isconfirmed
+    alert("ORB_FADE | " + syminfo.tickerid + " | 11:30 NY: check any open position | NOT_AN_ORDER", alert.freq_once_per_bar_close)
+
+// =====================================
+// VISUALS
+// =====================================
+
+bool drawRange = inOR or ready
+
+plot(drawRange ? orHigh : na,
+     "OR High",
+     color = color.orange,
+     linewidth = 2,
+     style = plot.style_linebr)
+
+plot(drawRange ? orLow : na,
+     "OR Low",
+     color = color.aqua,
+     linewidth = 2,
+     style = plot.style_linebr)
+
+plot(phase == 2 ? stopPrice : na,
+     "Stop Loss",
+     color = color.red,
+     linewidth = 2,
+     style = plot.style_linebr)
+
+plot(phase == 2 ? takeProfit : na,
+     "Take Profit",
+     color = color.lime,
+     linewidth = 2,
+     style = plot.style_linebr)
+
+bgcolor(inOR ? color.new(color.blue, 90) : na)
+
+plotshape(breakUpMarker,
+     title = "Breakout Above OR",
+     style = shape.circle,
+     color = color.orange,
+     location = location.abovebar,
+     size = size.small)
+
+plotshape(breakDownMarker,
+     title = "Breakout Below OR",
+     style = shape.circle,
+     color = color.orange,
+     location = location.belowbar,
+     size = size.small)
+
+plotshape(buyMarker,
+     title = "BUY False Breakout",
+     style = shape.triangleup,
+     color = color.lime,
+     location = location.belowbar,
+     text = "BUY",
+     size = size.small)
+
+plotshape(sellMarker,
+     title = "SELL False Breakout",
+     style = shape.triangledown,
+     color = color.red,
+     location = location.abovebar,
+     text = "SELL",
+     size = size.small)
+
+// =====================================
+// DIAGNOSTIC TABLE
+// =====================================
+
+var table stats = table.new(
+     position.top_right, 2, 6,
+     bgcolor = color.new(color.black, 20),
+     border_width = 1)
+
+if barstate.islast
+
+    table.cell(stats, 0, 0, "ORB FADE",
+         text_color = color.white)
+    table.cell(stats, 1, 0, "M5",
+         text_color = color.yellow)
+
+    table.cell(stats, 0, 1, "NY Sessions",
+         text_color = color.white)
+    table.cell(stats, 1, 1, str.tostring(sessions),
+         text_color = color.white)
+
+    table.cell(stats, 0, 2, "Completed OR",
+         text_color = color.white)
+    table.cell(stats, 1, 2, str.tostring(completedOR),
+         text_color = color.white)
+
+    table.cell(stats, 0, 3, "Breakouts",
+         text_color = color.white)
+    table.cell(stats, 1, 3, str.tostring(breakouts),
+         text_color = color.white)
+
+    table.cell(stats, 0, 4, "Returns / Signals",
+         text_color = color.white)
+    table.cell(stats, 1, 4,
+         str.tostring(returns) + " / " +
+         str.tostring(signals),
+         text_color = color.yellow)
+
+    table.cell(stats, 0, 5, "Signal only",
+         text_color = color.white)
+    table.cell(stats, 1, 5,
+         "No execution",
+         text_color = color.lime)
+
+alertcondition(buyMarker, "ORB Fade LONG", "ORB Fade LONG: see chart and dynamic alert for levels")
+alertcondition(sellMarker, "ORB Fade SHORT", "ORB Fade SHORT: see chart and dynamic alert for levels")

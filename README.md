@@ -33,3 +33,7 @@ QQQ NASDAQ, M5: +22.41 USD, 17/31 (54.84%), PF 2.233, максимальная �
 ## Сигнальный индикатор
 
 [NY ORB Fade Signals](signals/ny-orb-fade-v1.0.pine) — отдельный файл с LONG/SHORT, SL/TP и расчётным объёмом. [Настройка Vela и ограничения](docs/signals.md). Не скомпилирован в Vela; уведомления и исполнение не подключены.
+
+## Telegram без лотов
+
+[Сигнальный код v1.1](signals/ny-orb-fade-v1.1-levels.pine) и [подключение Telegram](docs/telegram-signals.md).
