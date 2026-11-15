@@ -27,8 +27,8 @@ escapeJSON(string value) =>
     result := str.replace_all(result, "\t", "\\t")
     result
 
-payload(string text) =>
-    '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(text) + '"}'
+payload(string body) =>
+    '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(body) + '"}'
 
 entryMessage(string direction, float entry, float stop, float target) =>
     "[" + mode + "] NR7 Forex + ADR7 v1.1" +

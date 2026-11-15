@@ -53,3 +53,7 @@
 
 - Same NR7 test logic with entry-only Telegram fill payloads, explicit BUY/SELL, symbol, D1/M5, planned entry, SL and TP.
 - Added optional connection check. Exit notifications suppressed; manual trading only, no broker execution.
+
+## NR7 v1.1 compilation fix - 2026-11-15
+
+- Renamed forbidden Pine parameter text to body in Telegram payload function, addressing reported CE10150. Platform recompilation pending.
