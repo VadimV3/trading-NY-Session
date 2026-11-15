@@ -42,3 +42,9 @@
 - Brackets submitted with entry; levels based on signal close, next-bar fill may change realized R. calc_on_order_fills disabled.
 - Telegram alert() message contains levels without quantity. Date filter must be disabled for live signals after test end.
 - Compilation and platform backtest unverified. Fees/spread require configuration. Partial exits may count as separate closed trades.
+
+## NR7 Forex v1.0 - 2026-11-15
+
+- Separate daily NR7/ADR7 strategy on M5, OCA entries, opposing stops, one ADR target and end-of-day exit.
+- Added colored entry/SL/TP labels and status table.
+- Explicit first-M5-bar delay/skip rule and hypothetical fixed-size backtest settings; no platform compilation or profitability claim.

@@ -1,0 +1,140 @@
+//@version=6
+strategy("NR7 Forex + ADR7 v1.0", overlay=true,
+     initial_capital=100000, currency=currency.USD,
+     pyramiding=0, margin_long=5, margin_short=5,
+     calc_on_order_fills=false, calc_on_every_tick=false,
+     process_orders_on_close=false, slippage=1, max_labels_count=100)
+
+bool filterDates = input.bool(true, "Ограничить период")
+int start = input.time(timestamp("01 Jan 2024 00:00 +0000"), "Начало")
+int finish = input.time(timestamp("15 Nov 2026 23:59 +0000"), "Конец")
+float bufferPips = input.float(1, "Буфер входа и SL, пипсов", minval=0.1, step=0.1)
+float targetADR = input.float(1, "TP: множитель ADR7", minval=0.1, step=0.1)
+float units = input.float(10000, "Тестовый объём, единиц базовой валюты", minval=1)
+float pipOverride = input.float(0, "Размер пипса: 0 = авто", minval=0)
+bool showLabels = input.bool(true, "Подписи цен справа")
+
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Выберите стандартные свечи M5. NR7 рассчитывается по D1 автоматически.")
+if syminfo.type != "forex"
+    runtime.error("Эта версия предназначена для валютных пар Forex.")
+
+float pip = pipOverride > 0 ? pipOverride : syminfo.currency == "JPY" ? 0.01 : 0.0001
+float buffer = math.ceil(bufferPips * pip / syminfo.mintick) * syminfo.mintick
+
+// All requested values are historical daily values: no forming D1 candle.
+// ADR excludes the NR7 candidate: seven days immediately before it.
+[dHigh, dLow, isNR7, adr] = request.security(syminfo.tickerid, "1D",
+     [high[1], low[1], (high-low)[1] < ta.lowest(high-low, 6)[2], ta.sma(high-low, 7)[2]],
+     lookahead=barmerge.lookahead_on)
+
+bool newDay = timeframe.change("1D")
+bool firstFullBar = time == time("1D")
+bool lastDayBar = time_close == time_close("1D")
+bool inDates = not filterDates or (time >= start and time_close <= finish)
+
+var float buyEntry = na
+var float sellEntry = na
+var float buySL = na
+var float sellSL = na
+var float buyTP = na
+var float sellTP = na
+var float rangeHigh = na
+var float rangeLow = na
+var bool armed = false
+var string status = "Ждём закрытия D1"
+var int setups = 0
+var int accepted = 0
+var int skipped = 0
+
+if newDay and barstate.isconfirmed
+    strategy.cancel_all()
+    armed := false
+    buyEntry := na
+    sellEntry := na
+    buySL := na
+    sellSL := na
+    buyTP := na
+    sellTP := na
+    rangeHigh := na
+    rangeLow := na
+    status := "Вчера не NR7"
+    if isNR7 and not na(adr) and adr > 0 and inDates
+        setups += 1
+        rangeHigh := dHigh
+        rangeLow := dLow
+        buyEntry := math.round_to_mintick(dHigh + buffer)
+        sellEntry := math.round_to_mintick(dLow - buffer)
+        buySL := sellEntry
+        sellSL := buyEntry
+        buyTP := math.round_to_mintick(buyEntry + targetADR * adr)
+        sellTP := math.round_to_mintick(sellEntry - targetADR * adr)
+        // Orders can only be submitted after the first M5 bar closes.
+        // Skip if either entry was already touched during that bar / gap.
+        bool untouched = high < buyEntry and low > sellEntry
+        if firstFullBar and untouched and not lastDayBar and strategy.position_size == 0
+            strategy.entry("NR7 LONG", strategy.long, qty=units, stop=buyEntry,
+                 oca_name="NR7 ENTRY", oca_type=strategy.oca.cancel)
+            strategy.entry("NR7 SHORT", strategy.short, qty=units, stop=sellEntry,
+                 oca_name="NR7 ENTRY", oca_type=strategy.oca.cancel)
+            strategy.exit("LONG TP / SL", "NR7 LONG", stop=buySL, limit=buyTP)
+            strategy.exit("SHORT TP / SL", "NR7 SHORT", stop=sellSL, limit=sellTP)
+            armed := true
+            accepted += 1
+            status := "Заявки активны: ждём пробой"
+        else
+            skipped += 1
+            status := "Пропуск: ранний пробой / нет первого M5 / позиция"
+
+if armed and strategy.position_size > 0
+    status := "LONG: SL и TP активны"
+if armed and strategy.position_size < 0
+    status := "SHORT: SL и TP активны"
+if armed and ta.change(strategy.closedtrades) > 0 and strategy.position_size == 0
+    status := "Сделка закрыта. Повторного входа нет"
+
+if lastDayBar and barstate.isconfirmed
+    strategy.cancel_all()
+    strategy.close_all(comment="Конец D1", immediately=true)
+    armed := false
+    if not na(rangeHigh)
+        status := "День завершён: заявки сняты, остаток закрыт"
+
+plot(rangeHigh, "NR7 High", color.orange, 2, plot.style_linebr)
+plot(rangeLow, "NR7 Low", color.orange, 2, plot.style_linebr)
+pBuy = plot(buyEntry, "BUY STOP", color.blue, 2, plot.style_linebr)
+pSell = plot(sellEntry, "SELL STOP", color.purple, 2, plot.style_linebr)
+plot(buySL, "SL для LONG", color.red, 1, plot.style_circles)
+plot(sellSL, "SL для SHORT", color.red, 1, plot.style_circles)
+plot(buyTP, "TP для LONG", color.green, 2, plot.style_linebr)
+plot(sellTP, "TP для SHORT", color.green, 2, plot.style_linebr)
+fill(pBuy, pSell, color.new(color.orange, 94), title="Диапазон ожидания")
+bgcolor(newDay and isNR7 and inDates ? color.new(color.yellow, 85) : na)
+
+// Recreate only six latest labels; historical levels remain as plots.
+var array<label> tags = array.new<label>()
+if barstate.islast
+    while array.size(tags) > 0
+        label.delete(array.pop(tags))
+    if showLabels and not na(buyEntry)
+        array.push(tags, label.new(bar_index+2, buyEntry, "BUY STOP  " + str.tostring(buyEntry, format.mintick), style=label.style_label_left, color=color.blue, textcolor=color.white))
+        array.push(tags, label.new(bar_index+2, sellEntry, "SELL STOP  " + str.tostring(sellEntry, format.mintick), style=label.style_label_left, color=color.purple, textcolor=color.white))
+        array.push(tags, label.new(bar_index+12, buySL, "SL LONG  " + str.tostring(buySL, format.mintick), style=label.style_label_left, color=color.red, textcolor=color.white))
+        array.push(tags, label.new(bar_index+12, sellSL, "SL SHORT  " + str.tostring(sellSL, format.mintick), style=label.style_label_left, color=color.red, textcolor=color.white))
+        array.push(tags, label.new(bar_index+2, buyTP, "TP LONG  " + str.tostring(buyTP, format.mintick), style=label.style_label_left, color=color.green, textcolor=color.white))
+        array.push(tags, label.new(bar_index+2, sellTP, "TP SHORT  " + str.tostring(sellTP, format.mintick), style=label.style_label_left, color=color.green, textcolor=color.white))
+
+var table info = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 15))
+if barstate.islast
+    table.cell(info, 0, 0, "NR7 + ADR7", text_color=color.yellow)
+    table.cell(info, 1, 0, syminfo.tickerid, text_color=color.white)
+    table.cell(info, 0, 1, "Статус", text_color=color.white)
+    table.cell(info, 1, 1, status, text_color=color.white)
+    table.cell(info, 0, 2, "ADR7, пипсы", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(adr/pip, "#.0"), text_color=color.white)
+    table.cell(info, 0, 3, "NR7 / принято / пропуск", text_color=color.white)
+    table.cell(info, 1, 3, str.tostring(setups)+" / "+str.tostring(accepted)+" / "+str.tostring(skipped), text_color=color.white)
+    table.cell(info, 0, 4, "Закрытых сделок", text_color=color.white)
+    table.cell(info, 1, 4, str.tostring(strategy.closedtrades), text_color=color.white)
+    table.cell(info, 0, 5, "День поставщика", text_color=color.white)
+    table.cell(info, 1, 5, syminfo.timezone, text_color=color.white)
