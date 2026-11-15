@@ -13,3 +13,9 @@ Labels show latest setup (even after expiry or skipped setup); use status table 
 Validation: static source checks only. Compilation and platform backtest pending. Test one pair first, then same settings on the remaining five. Save Properties, data provider, range, fees, CSV and chart screenshots for each run. Do not claim profitability before actual tests.
 
 Confirmed daily data pattern: https://www.tradingview.com/pine-script-docs/faq/other-data-and-timeframes/
+
+## v1.1 Telegram
+
+Same model and labels. Sends BUY/SELL entry fill notifications from the TradingView emulator, not confirmation of broker execution. Alert creation: choose order fills AND alert() calls; Message must be exactly {{strategy.order.alert_message}}. Telegram webhook URL uses the bot token privately; token never goes into Pine. Exit fills are suppressed with disable_alert=true. alert() calls are used only for optional delivery test, at next realtime M5 close. Normal entry events can trigger intrabar when pending stop is filled. Test/LIVE labels do not place real orders.
+
+chat_id is prefilled per user request. Recreate alert after changes. Enable delivery-test input BEFORE creating temporary alert; remove temporary alert after success and recreate main alert with test input off. Uses same Telegram destination as ORB; each message identifies NR7 strategy and chart symbol. One chart/alert per pair; naming the strategy does not automatically scan six pairs. No message on a day without a filled NR7 entry.

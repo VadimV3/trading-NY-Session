@@ -48,3 +48,8 @@
 - Separate daily NR7/ADR7 strategy on M5, OCA entries, opposing stops, one ADR target and end-of-day exit.
 - Added colored entry/SL/TP labels and status table.
 - Explicit first-M5-bar delay/skip rule and hypothetical fixed-size backtest settings; no platform compilation or profitability claim.
+
+## NR7 Forex v1.1 Telegram - 2026-11-15
+
+- Same NR7 test logic with entry-only Telegram fill payloads, explicit BUY/SELL, symbol, D1/M5, planned entry, SL and TP.
+- Added optional connection check. Exit notifications suppressed; manual trading only, no broker execution.
