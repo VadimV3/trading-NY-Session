@@ -57,3 +57,9 @@
 ## NR7 v1.1 compilation fix - 2026-11-15
 
 - Renamed forbidden Pine parameter text to body in Telegram payload function, addressing reported CE10150. Platform recompilation pending.
+
+## ORB signal indicator v1.4 - 2026-11-16
+
+- New standalone indicator: OR boundaries, confirmed-close BUY/SELL and 11:30 NY time exit. No strategy orders, sizing, SL or TP.
+- Preserves first-breakout fade rules, six-M5-bar wait and 09:45-10:30 entry window. Diagnostic markers explain timeouts and opposite-boundary invalidation.
+- RESET at next OR if exit bar was absent; this is a state reset, not an executed exit. No automatic broker/Telegram connection. Compilation pending.

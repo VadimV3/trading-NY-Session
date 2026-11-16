@@ -1,0 +1,107 @@
+//@version=6
+indicator("NY ORB Fade v1.4 — только сигналы", overlay=true)
+string tz = "America/New_York"
+int waitBars = input.int(6, "Максимум свечей после пробоя", minval=1, maxval=100)
+bool diagnostics = input.bool(true, "Показывать пробой и отмену")
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Используйте стандартные свечи M5")
+bool inOR = not na(time(timeframe.period, "0930-0945:23456", tz))
+bool entryWindow = not na(time(timeframe.period, "0945-1030:23456", tz))
+bool exitBar = not na(time(timeframe.period, "1125-1130:23456", tz))
+int dayKey = year(time, tz)*10000 + month(time, tz)*100 + dayofmonth(time, tz)
+var int orDay = na
+var int orBars = 0
+var float hi = na
+var float lo = na
+var int phase = 2
+var int side = 0
+var int breakBar = na
+var int signalPosition = 0
+var string status = "Ждём 09:30 NY"
+bool buy = false
+bool sell = false
+bool exitSignal = false
+bool breakUp = false
+bool breakDown = false
+bool expired = false
+bool invalid = false
+bool staleExit = false
+
+if barstate.isconfirmed
+    if inOR and (na(orDay) or orDay != dayKey)
+        // Fallback if yesterday's exit bar was missing from the feed.
+        if signalPosition != 0
+            staleExit := true
+        signalPosition := 0
+        orDay := dayKey
+        orBars := 1
+        hi := high
+        lo := low
+        phase := 0
+        side := 0
+        breakBar := na
+        status := "Строим диапазон"
+    else if inOR
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+        orBars += 1
+
+    bool ready = orDay == dayKey and orBars == 3 and not inOR and hi > lo
+    if ready and entryWindow and signalPosition == 0
+        if phase == 0
+            status := "Ждём закрытие за диапазоном"
+            if close > hi or close < lo
+                side := close > hi ? 1 : -1
+                breakBar := bar_index
+                phase := 1
+                breakUp := side == 1
+                breakDown := side == -1
+                status := "Пробой: ждём возврат"
+        else if phase == 1
+            int elapsed = bar_index - breakBar
+            if elapsed > waitBars
+                expired := true
+                phase := 2
+                status := "Отмена: истекло ожидание"
+            else if elapsed > 0
+                bool beyondOpposite = side == 1 ? close <= lo : close >= hi
+                if beyondOpposite
+                    invalid := true
+                    phase := 2
+                    status := "Отмена: закрытие за противоположной границей"
+                else if close > lo and close < hi
+                    buy := side == -1
+                    sell := side == 1
+                    signalPosition := buy ? 1 : -1
+                    phase := 2
+                    status := buy ? "BUY: ждём выхода по времени" : "SELL: ждём выхода по времени"
+
+    if ready and not entryWindow and phase != 2
+        expired := phase == 1
+        phase := 2
+        status := "Окно входов закрыто: 10:30 NY"
+
+    if exitBar and signalPosition != 0
+        exitSignal := true
+        signalPosition := 0
+        status := "EXIT: 11:30 NY"
+
+bool drawRange = inOR or (orDay == dayKey and orBars == 3)
+plot(drawRange ? hi : na, "OR High", color.orange, 2, plot.style_linebr)
+plot(drawRange ? lo : na, "OR Low", color.aqua, 2, plot.style_linebr)
+bgcolor(inOR ? color.new(color.blue, 92) : na)
+plotshape(buy, "BUY", shape.labelup, location.belowbar, color.green, text="BUY", textcolor=color.white, size=size.small)
+plotshape(sell, "SELL", shape.labeldown, location.abovebar, color.red, text="SELL", textcolor=color.white, size=size.small)
+plotshape(exitSignal, "EXIT 11:30", shape.xcross, location.abovebar, color.yellow, text="EXIT\n11:30 NY", size=size.small)
+plotshape(staleExit, "Сброс старого сигнала", shape.xcross, location.abovebar, color.gray, text="RESET", size=size.small)
+plotshape(diagnostics and breakUp, "Пробой вверх", shape.triangleup, location.abovebar, color.orange, text="ПРОБОЙ", size=size.tiny)
+plotshape(diagnostics and breakDown, "Пробой вниз", shape.triangledown, location.belowbar, color.orange, text="ПРОБОЙ", size=size.tiny)
+plotshape(diagnostics and expired, "Ожидание отменено", shape.xcross, location.abovebar, color.gray, text="ВРЕМЯ", size=size.tiny)
+plotshape(diagnostics and invalid, "Противоположный пробой", shape.xcross, location.abovebar, color.gray, text="ОТМЕНА", size=size.tiny)
+var table panel = table.new(position.top_right, 1, 2, bgcolor=color.new(color.black, 20))
+if barstate.islast
+    table.cell(panel, 0, 0, "NY ORB Fade | M5", text_color=color.yellow)
+    table.cell(panel, 0, 1, status, text_color=color.white)
+alertcondition(buy, "ORB BUY", "NY ORB Fade BUY | {{exchange}}:{{ticker}} | M5 | close={{close}}")
+alertcondition(sell, "ORB SELL", "NY ORB Fade SELL | {{exchange}}:{{ticker}} | M5 | close={{close}}")
+alertcondition(exitSignal, "ORB EXIT", "NY ORB Fade EXIT 11:30 NY | {{exchange}}:{{ticker}}")
