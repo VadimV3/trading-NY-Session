@@ -77,3 +77,9 @@
 - Defaults retests to 09:45-11:30 NY; same-day OR only. Explicit breakout-direction context, not an independent trend detector.
 - Preserved rolling virtual statistics with new opposite-OR stop; one active position, skipped busy arrows counted. Prior Fade results do not apply.
 - Retest state scenarios passed; platform compilation pending.
+
+## NY OR v1.7 two events - 2026-11-16
+
+- Split confirmed closing breakout and subsequent confirmed inside-range return into separate markers and notification families.
+- Added optional tick-depth confirmation, repeated cycles until 11:30 NY and explicit whole-range-jump behavior. No BUY/SELL labels.
+- Virtual statistics apply only to returns, using breakout-extreme stop/3R; previous version results do not transfer. Platform compilation pending.
