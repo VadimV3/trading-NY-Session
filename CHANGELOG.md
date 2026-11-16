@@ -63,3 +63,10 @@
 - New standalone indicator: OR boundaries, confirmed-close BUY/SELL and 11:30 NY time exit. No strategy orders, sizing, SL or TP.
 - Preserves first-breakout fade rules, six-M5-bar wait and 09:45-10:30 entry window. Diagnostic markers explain timeouts and opposite-boundary invalidation.
 - RESET at next OR if exit bar was absent; this is a state reset, not an executed exit. No automatic broker/Telegram connection. Compilation pending.
+
+## ORB indicator v1.5 - 2026-11-16
+
+- Added last-20 virtual outcome table: hidden 3R target / breakout-extreme stop, time exits, R metrics and explicit ambiguous/data-gap counts.
+- Chart shows range and entry/exit markers only. Added plain-text app alerts and optional Telegram JSON, no orders.
+- Preserved one-session baseline, configurable wait/window before 11:30 NY. Multi-session carry not included without defined lifetime/invalidation rules.
+- Static checks and 11 reference-model assertions passed; Pine compilation and live delivery pending.
