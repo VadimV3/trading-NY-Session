@@ -1,0 +1,291 @@
+//@version=6
+indicator("NY OR v1.8 — пробой и возврат", overlay=true)
+
+string tz = "America/New_York"
+bool showStats = input.bool(true, "Показывать панель", group="Статистика")
+bool expandedStats = input.bool(true, "Развернуть статистику", group="Статистика")
+int sampleSize = input.int(20, "Последних завершённых виртуальных сделок", minval=1, maxval=200)
+string entryHours = input.session("0945-1130", "Окно сигналов NY (после 09:45, до 11:30)")
+int bufferTicks = input.int(2, "Скрытый SL: буфер за экстремумом пробоя, тики", minval=1)
+float targetR = input.float(3, "Скрытый TP, R", minval=0.1, step=0.25)
+bool showBreaks = input.bool(true, "Показывать сигналы пробоя")
+int confirmTicks = input.int(0, "Закрытие за границей: минимум тиков", minval=0)
+bool notifyBreaks = input.bool(true, "Оповещения: пробой", group="Оповещения")
+bool notifyReturns = input.bool(true, "Оповещения: возврат", group="Оповещения")
+bool notifyExits = input.bool(true, "Оповещения: виртуальный выход", group="Оповещения")
+bool telegramJSON = input.bool(false, "Формат Telegram JSON (для Webhook)", group="Оповещения")
+string chatId = input.string("201500809", "Telegram chat_id", group="Оповещения")
+
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Используйте стандартные свечи M5")
+
+escapeJSON(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped := str.replace_all(escaped, "\r", "\\r")
+    escaped := str.replace_all(escaped, "\t", "\\t")
+    escaped
+
+messageBody(string eventName, string details) =>
+    string body = "NY OR v1.8 | " + eventName +
+         "\n" + syminfo.tickerid + " | M5" +
+         "\n" + details +
+         "\nВремя закрытия бара NY: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", tz) +
+         "\nВиртуальная модель, фактическое исполнение не подтверждено."
+    telegramJSON ? '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(body) + '"}' : body
+
+// Outcome codes: 1=TP, -1=SL, 0=TIME, 2=ambiguous, 3=data gap.
+var array<int> outcomes = array.new<int>()
+var array<float> resultsR = array.new<float>()
+recordResult(int outcome, float resultR) =>
+    array.push(outcomes, outcome)
+    array.push(resultsR, resultR)
+    if array.size(outcomes) > sampleSize
+        array.shift(outcomes)
+        array.shift(resultsR)
+
+int entryEndMinute = int(str.tonumber(str.substring(entryHours, 5, 7)))*60 + int(str.tonumber(str.substring(entryHours, 7, 9)))
+int entryStartMinute = int(str.tonumber(str.substring(entryHours, 0, 2)))*60 + int(str.tonumber(str.substring(entryHours, 2, 4)))
+if entryStartMinute < 585 or entryEndMinute > 690 or entryStartMinute >= entryEndMinute
+    runtime.error("Окно входов должно быть внутри 09:45–11:30 NY")
+
+bool inOR = not na(time(timeframe.period, "0930-0945:23456", tz))
+int nyCloseMinute = hour(time_close, tz)*60 + minute(time_close, tz)
+bool beforeExit = nyCloseMinute < 690
+bool inWindow = not na(time(timeframe.period, entryHours + ":23456", tz)) and not inOR and beforeExit
+int dayKey = year(time, tz)*10000 + month(time, tz)*100 + dayofmonth(time, tz)
+int exitTimestamp = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), 11, 30)
+
+var int orDay = na
+var int orBars = 0
+var float hi = na
+var float lo = na
+var int phase = 2
+var int side = 0
+var int breakBar = na
+var float extreme = na
+var int virtualSide = 0
+var int signalBar = na
+var int tradeDay = na
+var int tradeExitTime = na
+var float entryPrice = na
+var float hiddenSL = na
+var float hiddenTP = na
+var float initialRisk = na
+var string status = "Ждём 09:30 NY"
+var int sessions = 0
+var int completeOR = 0
+var int breakouts = 0
+var int returns = 0
+var int entries = 0
+var int skippedBusy = 0
+
+bool buy = false
+bool sell = false
+bool exitSignal = false
+bool uncertain = false
+bool breakUp = false
+bool breakDown = false
+string exitReason = ""
+float exitPrice = na
+float completedR = na
+int outcomeCode = 2
+
+if barstate.isconfirmed
+    // No exit is checked on the signal bar: entry is its closing price.
+    if virtualSide != 0 and bar_index > signalBar
+        bool missingData = dayKey != tradeDay or time >= tradeExitTime
+        if missingData
+            // Unknown sequence across a missing exit bar: exclude from performance.
+            exitSignal := true
+            uncertain := true
+            exitReason := "DATA GAP: нет достоверного выхода 11:30"
+            outcomeCode := 3
+        else
+            bool gapSL = virtualSide == 1 ? open <= hiddenSL : open >= hiddenSL
+            bool gapTP = virtualSide == 1 ? open >= hiddenTP : open <= hiddenTP
+            bool hitSL = virtualSide == 1 ? low <= hiddenSL : high >= hiddenSL
+            bool hitTP = virtualSide == 1 ? high >= hiddenTP : low <= hiddenTP
+            if gapSL
+                exitSignal := true
+                exitPrice := open
+                outcomeCode := -1
+                exitReason := "SL: гэп, модельный выход по open"
+            else if gapTP
+                exitSignal := true
+                exitPrice := hiddenTP
+                outcomeCode := 1
+                exitReason := "TP: консервативный выход по цели"
+            else if hitSL and hitTP
+                exitSignal := true
+                uncertain := true
+                outcomeCode := 2
+                exitReason := "НЕОПРЕДЕЛЁННО: SL и TP в одном M5"
+            else if hitSL
+                exitSignal := true
+                exitPrice := hiddenSL
+                outcomeCode := -1
+                exitReason := "SL"
+            else if hitTP
+                exitSignal := true
+                exitPrice := hiddenTP
+                outcomeCode := 1
+                exitReason := "TP " + str.tostring(targetR) + "R"
+            else if time_close >= tradeExitTime
+                exitSignal := true
+                exitPrice := close
+                outcomeCode := 0
+                exitReason := "TIME 11:30 NY"
+        if exitSignal
+            completedR := uncertain ? na : virtualSide * (exitPrice-entryPrice) / initialRisk
+            recordResult(outcomeCode, completedR)
+            status := exitReason
+            string resultText = uncertain ? "Результат исключён из процентов и суммы R." : "Модельный результат: " + str.tostring(completedR, "#.##") + "R"
+            if notifyExits
+                alert(messageBody("EXIT", exitReason + "\n" + resultText), alert.freq_all)
+            virtualSide := 0
+
+    if inOR and (na(orDay) or orDay != dayKey)
+        orDay := dayKey
+        orBars := 1
+        hi := high
+        lo := low
+        phase := 0
+        side := 0
+        breakBar := na
+        extreme := na
+        sessions += 1
+        status := "Строим OR 09:30–09:45 NY"
+    else if inOR
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+        orBars += 1
+
+    bool ready = orDay == dayKey and orBars == 3 and not inOR and hi > lo
+    if ready and inOR[1]
+        completeOR += 1
+
+    // Event 1: confirmed close outside OR. Event 2: later confirmed close back inside.
+    // Repeated breakout-return cycles allowed during this session.
+    if ready and inWindow
+        float depth = confirmTicks*syminfo.mintick
+        bool closedAbove = close > hi+depth
+        bool closedBelow = close < lo-depth
+        bool backInside = side == 1 ? (close < hi-depth and close > lo) : (close > lo+depth and close < hi)
+        if side == 0
+            if closedAbove or closedBelow
+                side := closedAbove ? 1 : -1
+                breakBar := bar_index
+                extreme := side == 1 ? high : low
+                breakouts += 1
+                breakUp := side == 1
+                breakDown := side == -1
+                status := "ПРОБОЙ: ждём закрытие внутри OR"
+            else
+                status := "Ждём закрытие за границей OR"
+        else if bar_index > breakBar
+            bool oppositeBreak = side == 1 ? closedBelow : closedAbove
+            if oppositeBreak
+                // A close beyond the other edge is NOT a close inside OR.
+                side := closedAbove ? 1 : -1
+                breakBar := bar_index
+                extreme := side == 1 ? high : low
+                breakouts += 1
+                breakUp := side == 1
+                breakDown := side == -1
+                status := "ПРОБОЙ другой стороны: ждём возврат"
+            else
+                extreme := side == 1 ? math.max(extreme, high) : math.min(extreme, low)
+                if backInside
+                    buy := side == -1
+                    sell := side == 1
+                    returns += 1
+                    status := buy ? "ВОЗВРАТ снизу внутрь OR" : "ВОЗВРАТ сверху внутрь OR"
+                    if notifyReturns
+                        alert(messageBody(buy ? "ВОЗВРАТ: СНИЗУ ВВЕРХ" : "ВОЗВРАТ: СВЕРХУ ВНИЗ", "Закрытие внутри диапазона: " + str.tostring(close, format.mintick)), alert.freq_all)
+                    if virtualSide == 0 and not exitSignal
+                        int direction = buy ? 1 : -1
+                        float candidateSL = extreme-direction*bufferTicks*syminfo.mintick
+                        float riskDistance = math.abs(close-candidateSL)
+                        if riskDistance > syminfo.mintick
+                            virtualSide := direction
+                            entryPrice := close
+                            hiddenSL := candidateSL
+                            initialRisk := riskDistance
+                            hiddenTP := entryPrice+direction*targetR*initialRisk
+                            signalBar := bar_index
+                            tradeDay := dayKey
+                            tradeExitTime := exitTimestamp
+                            entries += 1
+                    else
+                        skippedBusy += 1
+                    side := 0
+                    extreme := na
+                    breakBar := na
+        if (breakUp or breakDown) and notifyBreaks
+            alert(messageBody(breakUp ? "ПРОБОЙ ВВЕРХ" : "ПРОБОЙ ВНИЗ", "Закрытие снаружи OR: " + str.tostring(close, format.mintick) + "\nЭто событие пробоя, не вход модели возврата."), alert.freq_all)
+
+    if ready and not inWindow and nyCloseMinute >= entryEndMinute
+        side := 0
+        status := "Сессия сигналов завершена"
+
+bool drawOR = inOR or (orDay == dayKey and orBars == 3)
+plot(drawOR ? hi : na, "OR High", color.orange, 2, plot.style_linebr)
+plot(drawOR ? lo : na, "OR Low", color.aqua, 2, plot.style_linebr)
+plotshape(buy, "Возврат снизу", shape.triangleup, location.belowbar, color.lime, text="ВОЗВРАТ", size=size.small)
+plotshape(sell, "Возврат сверху", shape.triangledown, location.abovebar, color.fuchsia, text="ВОЗВРАТ", size=size.small)
+plotshape(exitSignal and not uncertain, "EXIT", shape.xcross, location.abovebar, color.yellow, text="EXIT", size=size.small)
+plotshape(exitSignal and uncertain, "Неопределённый выход", shape.xcross, location.abovebar, color.gray, text="EXIT ?", size=size.small)
+plotshape(showBreaks and breakUp, "Пробой вверх", shape.triangleup, location.abovebar, color.orange, text="ПРОБОЙ", size=size.tiny)
+plotshape(showBreaks and breakDown, "Пробой вниз", shape.triangledown, location.belowbar, color.orange, text="ПРОБОЙ", size=size.tiny)
+
+var table panel = table.new(position.top_right, 2, 13, bgcolor=color.new(color.black, 15))
+if barstate.islast
+    int n = array.size(outcomes)
+    int tpCount = 0
+    int slCount = 0
+    int timeCount = 0
+    int excluded = 0
+    int positive = 0
+    int valid = 0
+    float netR = 0
+    float peakR = 0
+    float ddR = 0
+    if n > 0
+        for i = 0 to n-1
+            int code = array.get(outcomes, i)
+            float value = array.get(resultsR, i)
+            tpCount += code == 1 ? 1 : 0
+            slCount += code == -1 ? 1 : 0
+            timeCount += code == 0 ? 1 : 0
+            if na(value)
+                excluded += 1
+            else
+                valid += 1
+                positive += value > 0 ? 1 : 0
+                netR += value
+                peakR := math.max(peakR, netR)
+                ddR := math.max(ddR, peakR-netR)
+    string tpPct = valid > 0 ? str.tostring(100.0*tpCount/valid, "#.0") + "%" : "—"
+    string winPct = valid > 0 ? str.tostring(100.0*positive/valid, "#.0") + "%" : "—"
+    array<string> names = array.from("NY OR | M5", "Статус", "Сессии / полный OR*", "Пробои / возвраты*", "Вирт. входы / пропуск занят*", "Завершённых в окне", "TP / SL / TIME", "Неопределённых / пропуск данных", "Достижение цели", "Положительный результат", "Сумма / среднее R", "Просадка закрытых, R", "*Вся загруженная история")
+    array<string> values = array.from(syminfo.tickerid, status, str.tostring(sessions)+" / "+str.tostring(completeOR), str.tostring(breakouts)+" / "+str.tostring(returns), str.tostring(entries)+" / "+str.tostring(skippedBusy), str.tostring(n)+" / "+str.tostring(sampleSize), str.tostring(tpCount)+" / "+str.tostring(slCount)+" / "+str.tostring(timeCount), str.tostring(excluded), tpPct+" ("+str.tostring(targetR)+"R)", winPct, str.tostring(netR, "#.##")+" / "+(valid > 0 ? str.tostring(netR/valid, "#.##") : "—"), str.tostring(ddR, "#.##"), "Без комиссий, спреда и реальных fills")
+    // Clear old cells before rendering full, compact or hidden panel.
+    table.clear(panel, 0, 0, 1, 12)
+    if showStats
+        if expandedStats
+            for row = 0 to 12
+                table.cell(panel, 0, row, array.get(names, row), text_color=row == 0 ? color.yellow : color.white, text_size=size.small)
+                table.cell(panel, 1, row, array.get(values, row), text_color=color.white, text_size=size.small)
+        else
+            table.cell(panel, 0, 0, "NY OR | M5", text_color=color.yellow, text_size=size.small)
+            table.cell(panel, 1, 0, "Статистика свёрнута", text_color=color.white, text_size=size.small)
+            table.cell(panel, 0, 1, "Статус", text_color=color.white, text_size=size.small)
+            table.cell(panel, 1, 1, status, text_color=color.white, text_size=size.small)
+
+alertcondition(breakUp, "Пробой вверх", "NY OR: ПРОБОЙ ВВЕРХ | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(breakDown, "Пробой вниз", "NY OR: ПРОБОЙ ВНИЗ | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(buy, "Возврат снизу", "NY OR: ВОЗВРАТ СНИЗУ ВНУТРЬ | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(sell, "Возврат сверху", "NY OR: ВОЗВРАТ СВЕРХУ ВНУТРЬ | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(exitSignal, "Виртуальный выход", "NY OR: виртуальная позиция завершена | {{exchange}}:{{ticker}} | M5")

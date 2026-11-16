@@ -83,3 +83,9 @@
 - Split confirmed closing breakout and subsequent confirmed inside-range return into separate markers and notification families.
 - Added optional tick-depth confirmation, repeated cycles until 11:30 NY and explicit whole-range-jump behavior. No BUY/SELL labels.
 - Virtual statistics apply only to returns, using breakout-extreme stop/3R; previous version results do not transfer. Platform compilation pending.
+
+## NY OR v1.8 panel - 2026-11-16
+
+- Added Statistics inputs for full, compact and hidden panel views; no chart-cell click handler.
+- Signal, virtual trade and rolling statistics core preserved from v1.7. Display change does not disable calculations or alerts.
+- Static core comparison passed; Pine compilation/visual QA pending.
