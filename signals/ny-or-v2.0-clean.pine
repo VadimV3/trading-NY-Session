@@ -1,0 +1,139 @@
+//@version=6
+indicator("NY OR v2.0 — тонкий диапазон, пробой и возврат", overlay=true, max_lines_count=300, max_labels_count=300)
+string tz = "America/New_York"
+string rollover = input.string("09:45 NY", "Заменять старый диапазон", options=["09:30 NY", "09:45 NY"])
+bool expireAfterReturn = input.bool(true, "Завершать диапазон после первого возврата")
+bool showMarkers = input.bool(false, "Показывать небольшие метки событий")
+int confirmTicks = input.int(0, "Подтверждение закрытия, тиков", minval=0)
+bool sendBreaks = input.bool(true, "Отправлять пробой", group="Оповещения")
+bool sendReturns = input.bool(true, "Отправлять возврат", group="Оповещения")
+bool telegramJSON = input.bool(false, "Telegram JSON для Webhook", group="Оповещения")
+string chatId = input.string("201500809", "Telegram chat_id", group="Оповещения")
+if not timeframe.isintraday or timeframe.in_seconds() < 300 or timeframe.in_seconds() > 3600 or timeframe.in_seconds() % 300 != 0
+    runtime.error("Используйте M5–H1, интервал кратный 5 минутам. Расчёт M5.")
+escapeJSON(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped := str.replace_all(escaped, "\r", "\\r")
+    escaped := str.replace_all(escaped, "\t", "\\t")
+    escaped
+payload(string eventName, float eventPrice, int eventClose) =>
+    string body = "NY OR v2.0 | " + eventName + "\n" + syminfo.tickerid + " | расчёт M5\nЦена закрытия: " + str.tostring(eventPrice, format.mintick) + "\nВремя NY: " + str.format_time(eventClose, "yyyy-MM-dd HH:mm", tz) + "\nСобытие индикатора, не исполнение сделки."
+    telegramJSON ? '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(body) + '"}' : body
+
+[times5, closes5, highs5, lows5, prices5] = request.security_lower_tf(syminfo.tickerid, "5", [time, time_close, high, low, close])
+var int buildingDay = na
+var int countOR = 0
+var float buildHigh = na
+var float buildLow = na
+var float activeHigh = na
+var float activeLow = na
+var int activeSide = 0
+var bool active = false
+var line highLine = na
+var line lowLine = na
+var line nextHighLine = na
+var line nextLowLine = na
+varip int realtimeStart = na
+varip int lastAlertClose = na
+if barstate.isrealtime and na(realtimeStart)
+    realtimeStart := timenow
+
+int n = array.size(times5)
+if n > 0
+    for i = 0 to n-1
+        int t = array.get(times5, i)
+        int tc = array.get(closes5, i)
+        float h = array.get(highs5, i)
+        float l = array.get(lows5, i)
+        float c = array.get(prices5, i)
+        if tc <= timenow
+            int dayKey = year(t, tz)*10000 + month(t, tz)*100 + dayofmonth(t, tz)
+            int minuteNY = hour(t, tz)*60 + minute(t, tz)
+            int weekdayNY = dayofweek(t, tz)
+            bool inOR = weekdayNY >= dayofweek.monday and weekdayNY <= dayofweek.friday and minuteNY >= 570 and minuteNY < 585
+            bool newOR = inOR and (na(buildingDay) or buildingDay != dayKey)
+            bool canNotify = barstate.isrealtime and tc >= realtimeStart and (na(lastAlertClose) or tc > lastAlertClose)
+            bool breakoutUp = false
+            bool breakoutDown = false
+            bool returnFromBelow = false
+            bool returnFromAbove = false
+
+            if newOR
+                buildingDay := dayKey
+                countOR := 1
+                buildHigh := h
+                buildLow := l
+                activeSide := 0
+                if rollover == "09:30 NY"
+                    if not na(highLine)
+                        line.set_x2(highLine, t)
+                        line.set_x2(lowLine, t)
+                    active := false
+                nextHighLine := line.new(t, h, tc, h, xloc=xloc.bar_time, color=color.orange, width=1)
+                nextLowLine := line.new(t, l, tc, l, xloc=xloc.bar_time, color=color.aqua, width=1)
+            else if inOR
+                countOR += 1
+                buildHigh := math.max(buildHigh, h)
+                buildLow := math.min(buildLow, l)
+                line.set_y1(nextHighLine, buildHigh)
+                line.set_y2(nextHighLine, buildHigh)
+                line.set_y1(nextLowLine, buildLow)
+                line.set_y2(nextLowLine, buildLow)
+
+            if inOR
+                line.set_x2(nextHighLine, tc)
+                line.set_x2(nextLowLine, tc)
+                if active
+                    line.set_x2(highLine, tc)
+                    line.set_x2(lowLine, tc)
+                // At 09:45 the old range expires even if the new OR lacks data.
+                if active and hour(tc, tz)*60+minute(tc, tz) >= 585
+                    active := false
+                // New range becomes fixed only when all 3 M5 bars are available.
+                if countOR == 3 and hour(tc, tz)*60+minute(tc, tz) == 585 and buildHigh > buildLow
+                    if active
+                        line.set_x2(highLine, tc)
+                        line.set_x2(lowLine, tc)
+                    activeHigh := buildHigh
+                    activeLow := buildLow
+                    highLine := nextHighLine
+                    lowLine := nextLowLine
+                    activeSide := 0
+                    active := true
+            else if active
+                // Extend through the current available bar, including after 11:30.
+                line.set_x2(highLine, tc)
+                line.set_x2(lowLine, tc)
+                float depth = confirmTicks*syminfo.mintick
+                bool above = c > activeHigh+depth
+                bool below = c < activeLow-depth
+                bool inside = activeSide == 1 ? (c < activeHigh-depth and c > activeLow) : (c > activeLow+depth and c < activeHigh)
+                if activeSide == 0
+                    if above or below
+                        activeSide := above ? 1 : -1
+                        breakoutUp := above
+                        breakoutDown := below
+                else
+                    bool opposite = activeSide == 1 ? below : above
+                    if opposite
+                        activeSide := above ? 1 : -1
+                        breakoutUp := above
+                        breakoutDown := below
+                    else if inside
+                        returnFromBelow := activeSide == -1
+                        returnFromAbove := activeSide == 1
+                        activeSide := 0
+                string eventName = breakoutUp ? "ПРОБОЙ ВВЕРХ" : breakoutDown ? "ПРОБОЙ ВНИЗ" : returnFromBelow ? "ВОЗВРАТ СНИЗУ ВНУТРЬ" : returnFromAbove ? "ВОЗВРАТ СВЕРХУ ВНУТРЬ" : ""
+                bool eventEnabled = ((breakoutUp or breakoutDown) and sendBreaks) or ((returnFromBelow or returnFromAbove) and sendReturns)
+                if canNotify and eventEnabled
+                    alert(payload(eventName, c, tc), alert.freq_all)
+                if showMarkers and eventName != ""
+                    bool upwards = breakoutUp or returnFromBelow
+                    color markColor = breakoutUp or breakoutDown ? color.orange : returnFromBelow ? color.lime : color.fuchsia
+                    label.new(tc, upwards ? l : h, "", xloc=xloc.bar_time, yloc=yloc.price, style=upwards ? label.style_arrowup : label.style_arrowdown, color=markColor, size=size.tiny, tooltip=eventName+" | "+str.format_time(tc, "HH:mm", tz))
+                if expireAfterReturn and (returnFromBelow or returnFromAbove)
+                    active := false
+            if barstate.isrealtime
+                lastAlertClose := na(lastAlertClose) ? tc : math.max(lastAlertClose, tc)

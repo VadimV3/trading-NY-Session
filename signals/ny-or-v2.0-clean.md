@@ -1,0 +1,9 @@
+# NY OR v2.0 — clean range lifecycle
+
+User-selected behavior: one BREAK event, then confirmed inside RETURN event, then range expires; or replacement by next NY OR at 09:45, whichever comes first. Defaults: replacement 09:45 NY, expire after first return=true. Optional 09:30 replacement and disabling first-return expiry are exposed explicitly. Closed outside opposite edge is another BREAK (no return), not an automatic expiry. Wick touches do not qualify. No six-bar or 10:30/11:30 signal cutoff. Range forming 09:30-09:45 pauses old-range signal checks. Source availability permitting, events are checked after formation through overnight until expiry/replacement. Session means New York weekdays, not a bearish candle/session.
+
+Thin width-1 orange/aqua range boundaries. Both persist as historical drawings, but extend only while active; freeze at first return or replacement. New OR is shown building and is fixed only with three complete M5 candles. No stats, SL/TP, virtual positions, EXIT or triangle markers. Optional tiny event arrows off by default. No orders.
+
+M5 OHLC intrabar array processing retained for charts M5 through H1 (multiples of 5 minutes). History limited to available intrabars; old line/marker objects eventually deleted by TradingView limits. Alerts via Any alert() function call: separate Break and Return toggles. Plain app notifications by default, optional JSON for existing Telegram webhook. No secret token in code. Recreate alert after code/input changes. Realtime dedup timestamps prevent replay of events before alert-instance startup.
+
+Source checks passed: no table/strategy code, width 1, no 11:30 cutoff, no triangle markers. New rollover/first-return lifecycle reviewed. Pine compilation, visual QA and live delivery remain unverified. Not a profitability-tested strategy.

@@ -95,3 +95,9 @@
 - M5 intrabar processing and timestamp-anchored ranges/markers for M5 through H1; all available intrabar events retained.
 - Full/compact/hidden statistics panel retained, with available M5 history dates. Realtime timestamp deduplication added.
 - Static and reference aggregation checks passed; Pine compilation/visual QA and delivery pending.
+
+## NY OR v2.0 clean range - 2026-11-16
+
+- Removed statistics/virtual model entirely; thin range lines and optional small event arrows only.
+- User-selected expiry after first breakout/inside-return cycle or next NY OR replacement 09:45; no 11:30 cutoff. Historical range lines freeze at expiry.
+- Preserved two alert families and M5/H1 intrabar processing. Platform validation pending.
