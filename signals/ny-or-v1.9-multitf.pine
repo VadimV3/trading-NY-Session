@@ -1,0 +1,333 @@
+//@version=6
+indicator("NY OR v1.9 — M5 и H1", overlay=true, max_lines_count=300, max_labels_count=500)
+
+string tz = "America/New_York"
+bool showStats = input.bool(true, "Показывать панель", group="Статистика")
+bool expandedStats = input.bool(true, "Развернуть статистику", group="Статистика")
+int sampleSize = input.int(20, "Последних завершённых виртуальных сделок", minval=1, maxval=200)
+string entryHours = input.session("0945-1130", "Окно сигналов NY (после 09:45, до 11:30)")
+int bufferTicks = input.int(2, "Скрытый SL: буфер за экстремумом пробоя, тики", minval=1)
+float targetR = input.float(3, "Скрытый TP, R", minval=0.1, step=0.25)
+bool showBreaks = input.bool(true, "Показывать сигналы пробоя")
+int confirmTicks = input.int(0, "Закрытие за границей: минимум тиков", minval=0)
+bool notifyBreaks = input.bool(true, "Оповещения: пробой", group="Оповещения")
+bool notifyReturns = input.bool(true, "Оповещения: возврат", group="Оповещения")
+bool notifyExits = input.bool(true, "Оповещения: виртуальный выход", group="Оповещения")
+bool telegramJSON = input.bool(false, "Формат Telegram JSON (для Webhook)", group="Оповещения")
+string chatId = input.string("201500809", "Telegram chat_id", group="Оповещения")
+
+bool showExits = input.bool(true, "Показывать виртуальные выходы")
+bool labelWords = input.bool(false, "Подписи событий возле стрелок")
+if not timeframe.isintraday or timeframe.in_seconds() < 300 or timeframe.in_seconds() > 3600 or timeframe.in_seconds() % 300 != 0
+    runtime.error("Поддерживаются M5, M10, M15, M30 и H1; расчёт всегда M5")
+
+escapeJSON(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped := str.replace_all(escaped, "\r", "\\r")
+    escaped := str.replace_all(escaped, "\t", "\\t")
+    escaped
+
+messageBody(string eventName, string details, int eventClose) =>
+    string body = "NY OR v1.9 | " + eventName +
+         "\n" + syminfo.tickerid + " | M5" +
+         "\n" + details +
+         "\nВремя закрытия бара NY: " + str.format_time(eventClose, "yyyy-MM-dd HH:mm", tz) +
+         "\nВиртуальная модель, фактическое исполнение не подтверждено."
+    telegramJSON ? '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(body) + '"}' : body
+
+// Outcome codes: 1=TP, -1=SL, 0=TIME, 2=ambiguous, 3=data gap.
+var array<int> outcomes = array.new<int>()
+var array<float> resultsR = array.new<float>()
+recordResult(int outcome, float resultR) =>
+    array.push(outcomes, outcome)
+    array.push(resultsR, resultR)
+    if array.size(outcomes) > sampleSize
+        array.shift(outcomes)
+        array.shift(resultsR)
+
+int entryEndMinute = int(str.tonumber(str.substring(entryHours, 5, 7)))*60 + int(str.tonumber(str.substring(entryHours, 7, 9)))
+int entryStartMinute = int(str.tonumber(str.substring(entryHours, 0, 2)))*60 + int(str.tonumber(str.substring(entryHours, 2, 4)))
+if entryStartMinute < 585 or entryEndMinute > 690 or entryStartMinute >= entryEndMinute
+    runtime.error("Окно входов должно быть внутри 09:45–11:30 NY")
+
+var int orDay = na
+var int orBars = 0
+var float hi = na
+var float lo = na
+var int phase = 2
+var int side = 0
+var int breakBar = na
+var float extreme = na
+var int virtualSide = 0
+var int signalBar = na
+var int tradeDay = na
+var int tradeExitTime = na
+var float entryPrice = na
+var float hiddenSL = na
+var float hiddenTP = na
+var float initialRisk = na
+var string status = "Ждём 09:30 NY"
+var int sessions = 0
+var int completeOR = 0
+var int breakouts = 0
+var int returns = 0
+var int entries = 0
+var int skippedBusy = 0
+
+
+// Intrabar OHLC arrays retain every available M5 event inside an H1 candle.
+[times5, closes5, opens5, highs5, lows5, prices5] = request.security_lower_tf(
+     syminfo.tickerid, "5", [time, time_close, open, high, low, close])
+var bool previousInOR = false
+var int firstDataTime = na
+var int lastDataClose = na
+var line upperLine = na
+var line lowerLine = na
+varip int realtimeStart = na
+varip int lastAlertClose = na
+if barstate.isrealtime and na(realtimeStart)
+    realtimeStart := timenow
+
+int count5 = array.size(times5)
+if count5 > 0
+    for j = 0 to count5-1
+        int mTime = array.get(times5, j)
+        int mCloseTime = array.get(closes5, j)
+        float mOpen = array.get(opens5, j)
+        float mHigh = array.get(highs5, j)
+        float mLow = array.get(lows5, j)
+        float mClose = array.get(prices5, j)
+        // Never evaluate the unfinished five-minute candle.
+        if mCloseTime <= timenow
+            if na(firstDataTime)
+                firstDataTime := mTime
+            lastDataClose := mCloseTime
+            int minuteNY = hour(mTime, tz)*60 + minute(mTime, tz)
+            int nyCloseMinute = hour(mCloseTime, tz)*60 + minute(mCloseTime, tz)
+            int weekdayNY = dayofweek(mTime, tz)
+            bool workday = weekdayNY >= dayofweek.monday and weekdayNY <= dayofweek.friday
+            bool inOR = workday and minuteNY >= 570 and minuteNY < 585
+            bool inWindow = workday and minuteNY >= entryStartMinute and minuteNY < entryEndMinute and nyCloseMinute < 690
+            int dayKey = year(mTime, tz)*10000 + month(mTime, tz)*100 + dayofmonth(mTime, tz)
+            int exitTimestamp = timestamp(tz, year(mTime, tz), month(mTime, tz), dayofmonth(mTime, tz), 11, 30)
+            bool allowAlert = barstate.isrealtime and mCloseTime >= realtimeStart and (na(lastAlertClose) or mCloseTime > lastAlertClose)
+            bool buy = false
+            bool sell = false
+            bool exitSignal = false
+            bool uncertain = false
+            bool breakUp = false
+            bool breakDown = false
+            string exitReason = ""
+            float exitPrice = na
+            float completedR = na
+            int outcomeCode = 2
+            // No exit is checked on the signal bar: entry is its closing price.
+            if virtualSide != 0 and mTime > signalBar
+                bool missingData = dayKey != tradeDay or mTime >= tradeExitTime
+                if missingData
+                    // Unknown sequence across a missing exit bar: exclude from performance.
+                    exitSignal := true
+                    uncertain := true
+                    exitReason := "DATA GAP: нет достоверного выхода 11:30"
+                    outcomeCode := 3
+                else
+                    bool gapSL = virtualSide == 1 ? mOpen <= hiddenSL : mOpen >= hiddenSL
+                    bool gapTP = virtualSide == 1 ? mOpen >= hiddenTP : mOpen <= hiddenTP
+                    bool hitSL = virtualSide == 1 ? mLow <= hiddenSL : mHigh >= hiddenSL
+                    bool hitTP = virtualSide == 1 ? mHigh >= hiddenTP : mLow <= hiddenTP
+                    if gapSL
+                        exitSignal := true
+                        exitPrice := mOpen
+                        outcomeCode := -1
+                        exitReason := "SL: гэп, модельный выход по open"
+                    else if gapTP
+                        exitSignal := true
+                        exitPrice := hiddenTP
+                        outcomeCode := 1
+                        exitReason := "TP: консервативный выход по цели"
+                    else if hitSL and hitTP
+                        exitSignal := true
+                        uncertain := true
+                        outcomeCode := 2
+                        exitReason := "НЕОПРЕДЕЛЁННО: SL и TP в одном M5"
+                    else if hitSL
+                        exitSignal := true
+                        exitPrice := hiddenSL
+                        outcomeCode := -1
+                        exitReason := "SL"
+                    else if hitTP
+                        exitSignal := true
+                        exitPrice := hiddenTP
+                        outcomeCode := 1
+                        exitReason := "TP " + str.tostring(targetR) + "R"
+                    else if mCloseTime >= tradeExitTime
+                        exitSignal := true
+                        exitPrice := mClose
+                        outcomeCode := 0
+                        exitReason := "TIME 11:30 NY"
+                if exitSignal
+                    completedR := uncertain ? na : virtualSide * (exitPrice-entryPrice) / initialRisk
+                    recordResult(outcomeCode, completedR)
+                    status := exitReason
+                    string resultText = uncertain ? "Результат исключён из процентов и суммы R." : "Модельный результат: " + str.tostring(completedR, "#.##") + "R"
+                    if notifyExits and allowAlert
+                        alert(messageBody("EXIT", exitReason + "\n" + resultText, mCloseTime), alert.freq_all)
+                    virtualSide := 0
+
+            if inOR and (na(orDay) or orDay != dayKey)
+                orDay := dayKey
+                orBars := 1
+                hi := mHigh
+                lo := mLow
+                phase := 0
+                side := 0
+                breakBar := na
+                extreme := na
+                sessions += 1
+                status := "Строим OR 09:30–09:45 NY"
+            else if inOR
+                hi := math.max(hi, mHigh)
+                lo := math.min(lo, mLow)
+                orBars += 1
+
+            bool ready = orDay == dayKey and orBars == 3 and not inOR and hi > lo
+            if ready and previousInOR
+                completeOR += 1
+
+            // Event 1: confirmed mClose outside OR. Event 2: later confirmed mClose back inside.
+            // Repeated breakout-return cycles allowed during this session.
+            if ready and inWindow
+                float depth = confirmTicks*syminfo.mintick
+                bool closedAbove = mClose > hi+depth
+                bool closedBelow = mClose < lo-depth
+                bool backInside = side == 1 ? (mClose < hi-depth and mClose > lo) : (mClose > lo+depth and mClose < hi)
+                if side == 0
+                    if closedAbove or closedBelow
+                        side := closedAbove ? 1 : -1
+                        breakBar := mTime
+                        extreme := side == 1 ? mHigh : mLow
+                        breakouts += 1
+                        breakUp := side == 1
+                        breakDown := side == -1
+                        status := "ПРОБОЙ: ждём закрытие внутри OR"
+                    else
+                        status := "Ждём закрытие за границей OR"
+                else if mTime > breakBar
+                    bool oppositeBreak = side == 1 ? closedBelow : closedAbove
+                    if oppositeBreak
+                        // A mClose beyond the other edge is NOT a mClose inside OR.
+                        side := closedAbove ? 1 : -1
+                        breakBar := mTime
+                        extreme := side == 1 ? mHigh : mLow
+                        breakouts += 1
+                        breakUp := side == 1
+                        breakDown := side == -1
+                        status := "ПРОБОЙ другой стороны: ждём возврат"
+                    else
+                        extreme := side == 1 ? math.max(extreme, mHigh) : math.min(extreme, mLow)
+                        if backInside
+                            buy := side == -1
+                            sell := side == 1
+                            returns += 1
+                            status := buy ? "ВОЗВРАТ снизу внутрь OR" : "ВОЗВРАТ сверху внутрь OR"
+                            if notifyReturns and allowAlert
+                                alert(messageBody(buy ? "ВОЗВРАТ: СНИЗУ ВВЕРХ" : "ВОЗВРАТ: СВЕРХУ ВНИЗ", "Закрытие внутри диапазона: " + str.tostring(mClose, format.mintick), mCloseTime), alert.freq_all)
+                            if virtualSide == 0 and not exitSignal
+                                int direction = buy ? 1 : -1
+                                float candidateSL = extreme-direction*bufferTicks*syminfo.mintick
+                                float riskDistance = math.abs(mClose-candidateSL)
+                                if riskDistance > syminfo.mintick
+                                    virtualSide := direction
+                                    entryPrice := mClose
+                                    hiddenSL := candidateSL
+                                    initialRisk := riskDistance
+                                    hiddenTP := entryPrice+direction*targetR*initialRisk
+                                    signalBar := mTime
+                                    tradeDay := dayKey
+                                    tradeExitTime := exitTimestamp
+                                    entries += 1
+                            else
+                                skippedBusy += 1
+                            side := 0
+                            extreme := na
+                            breakBar := na
+                if (breakUp or breakDown) and notifyBreaks and allowAlert
+                    alert(messageBody(breakUp ? "ПРОБОЙ ВВЕРХ" : "ПРОБОЙ ВНИЗ", "Закрытие снаружи OR: " + str.tostring(mClose, format.mintick) + "\nЭто событие пробоя, не вход модели возврата.", mCloseTime), alert.freq_all)
+
+            if ready and not inWindow and nyCloseMinute >= entryEndMinute
+                side := 0
+                status := "Сессия сигналов завершена"
+
+            // Lines are anchored to actual M5 timestamps, including on H1.
+            if inOR and orBars == 1
+                upperLine := line.new(mTime, hi, exitTimestamp, hi, xloc=xloc.bar_time, color=color.orange, width=2)
+                lowerLine := line.new(mTime, lo, exitTimestamp, lo, xloc=xloc.bar_time, color=color.aqua, width=2)
+            else if inOR
+                if not na(upperLine)
+                    line.set_y1(upperLine, hi)
+                    line.set_y2(upperLine, hi)
+                if not na(lowerLine)
+                    line.set_y1(lowerLine, lo)
+                    line.set_y2(lowerLine, lo)
+            if showBreaks and breakUp
+                label.new(mCloseTime, mHigh, labelWords ? "ПРОБОЙ" : "", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_triangleup, color=color.orange, textcolor=color.orange, size=size.tiny, tooltip="Пробой вверх | M5 закрытие " + str.format_time(mCloseTime, "HH:mm", tz))
+            if showBreaks and breakDown
+                label.new(mCloseTime, mLow, labelWords ? "ПРОБОЙ" : "", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_triangledown, color=color.orange, textcolor=color.orange, size=size.tiny, tooltip="Пробой вниз | M5 закрытие " + str.format_time(mCloseTime, "HH:mm", tz))
+            if buy
+                label.new(mCloseTime, mLow, labelWords ? "ВОЗВРАТ" : "", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_triangleup, color=color.lime, textcolor=color.lime, size=size.small, tooltip="Возврат снизу внутрь OR | " + str.format_time(mCloseTime, "HH:mm", tz))
+            if sell
+                label.new(mCloseTime, mHigh, labelWords ? "ВОЗВРАТ" : "", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_triangledown, color=color.fuchsia, textcolor=color.fuchsia, size=size.small, tooltip="Возврат сверху внутрь OR | " + str.format_time(mCloseTime, "HH:mm", tz))
+            if showExits and exitSignal
+                label.new(mCloseTime, mHigh, uncertain ? "EXIT ?" : "EXIT", xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_down, color=uncertain ? color.gray : color.yellow, textcolor=color.black, size=size.tiny, tooltip=exitReason)
+            previousInOR := inOR
+            if barstate.isrealtime
+                lastAlertClose := na(lastAlertClose) ? mCloseTime : math.max(lastAlertClose, mCloseTime)
+
+var table panel = table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 15))
+if barstate.islast
+    int n = array.size(outcomes)
+    int tpCount = 0
+    int slCount = 0
+    int timeCount = 0
+    int excluded = 0
+    int positive = 0
+    int valid = 0
+    float netR = 0
+    float peakR = 0
+    float ddR = 0
+    if n > 0
+        for i = 0 to n-1
+            int code = array.get(outcomes, i)
+            float value = array.get(resultsR, i)
+            tpCount += code == 1 ? 1 : 0
+            slCount += code == -1 ? 1 : 0
+            timeCount += code == 0 ? 1 : 0
+            if na(value)
+                excluded += 1
+            else
+                valid += 1
+                positive += value > 0 ? 1 : 0
+                netR += value
+                peakR := math.max(peakR, netR)
+                ddR := math.max(ddR, peakR-netR)
+    string tpPct = valid > 0 ? str.tostring(100.0*tpCount/valid, "#.0") + "%" : "—"
+    string winPct = valid > 0 ? str.tostring(100.0*positive/valid, "#.0") + "%" : "—"
+    array<string> names = array.from("NY OR | расчёт M5", "Статус", "Сессии / полный OR*", "Пробои / возвраты*", "Вирт. входы / пропуск занят*", "Завершённых в окне", "TP / SL / TIME", "Неопределённых / пропуск данных", "Достижение цели", "Положительный результат", "Сумма / среднее R", "Просадка закрытых, R", "*Вся загруженная история")
+    array<string> values = array.from(syminfo.tickerid, status, str.tostring(sessions)+" / "+str.tostring(completeOR), str.tostring(breakouts)+" / "+str.tostring(returns), str.tostring(entries)+" / "+str.tostring(skippedBusy), str.tostring(n)+" / "+str.tostring(sampleSize), str.tostring(tpCount)+" / "+str.tostring(slCount)+" / "+str.tostring(timeCount), str.tostring(excluded), tpPct+" ("+str.tostring(targetR)+"R)", winPct, str.tostring(netR, "#.##")+" / "+(valid > 0 ? str.tostring(netR/valid, "#.##") : "—"), str.tostring(ddR, "#.##"), "Без комиссий, спреда и реальных fills")
+    // Clear old cells before rendering full, compact or hidden panel.
+    table.clear(panel, 0, 0, 1, 13)
+    if showStats
+        if expandedStats
+            for row = 0 to 12
+                table.cell(panel, 0, row, array.get(names, row), text_color=row == 0 ? color.yellow : color.white, text_size=size.small)
+                table.cell(panel, 1, row, array.get(values, row), text_color=color.white, text_size=size.small)
+            table.cell(panel, 0, 13, "Доступная история M5", text_color=color.white, text_size=size.small)
+            table.cell(panel, 1, 13, na(firstDataTime) ? "Нет данных" : str.format_time(firstDataTime, "yyyy-MM-dd", tz)+" — "+str.format_time(lastDataClose, "yyyy-MM-dd", tz), text_color=color.white, text_size=size.small)
+        else
+            table.cell(panel, 0, 0, "NY OR | расчёт M5", text_color=color.yellow, text_size=size.small)
+            table.cell(panel, 1, 0, "Статистика свёрнута", text_color=color.white, text_size=size.small)
+            table.cell(panel, 0, 1, "Статус", text_color=color.white, text_size=size.small)
+            table.cell(panel, 1, 1, status, text_color=color.white, text_size=size.small)
+

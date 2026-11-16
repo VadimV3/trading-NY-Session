@@ -89,3 +89,9 @@
 - Added Statistics inputs for full, compact and hidden panel views; no chart-cell click handler.
 - Signal, virtual trade and rolling statistics core preserved from v1.7. Display change does not disable calculations or alerts.
 - Static core comparison passed; Pine compilation/visual QA pending.
+
+## NY OR v1.9 M5/H1 - 2026-11-16
+
+- M5 intrabar processing and timestamp-anchored ranges/markers for M5 through H1; all available intrabar events retained.
+- Full/compact/hidden statistics panel retained, with available M5 history dates. Realtime timestamp deduplication added.
+- Static and reference aggregation checks passed; Pine compilation/visual QA and delivery pending.
