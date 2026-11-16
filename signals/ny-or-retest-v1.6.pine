@@ -1,0 +1,289 @@
+//@version=6
+indicator("NY OR Retest v1.6 — касания и стрелки", overlay=true)
+
+string tz = "America/New_York"
+int sampleSize = input.int(20, "Последних завершённых виртуальных сделок", minval=1, maxval=200)
+string entryHours = input.session("0945-1130", "Окно ретестов NY (после 09:45, до 11:30)")
+int bufferTicks = input.int(2, "Скрытый SL: буфер за другой границей OR, тики", minval=1)
+float targetR = input.float(3, "Скрытый TP, R", minval=0.1, step=0.25)
+bool diagnostics = input.bool(false, "Показывать первоначальные пробои")
+bool telegramJSON = input.bool(false, "Формат Telegram JSON (для Webhook)", group="Оповещения")
+string chatId = input.string("201500809", "Telegram chat_id", group="Оповещения")
+
+if not (timeframe.isminutes and timeframe.multiplier == 5)
+    runtime.error("Используйте стандартные свечи M5")
+
+escapeJSON(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped := str.replace_all(escaped, "\r", "\\r")
+    escaped := str.replace_all(escaped, "\t", "\\t")
+    escaped
+
+messageBody(string eventName, string details) =>
+    string body = "NY OR Retest v1.6 | " + eventName +
+         "\n" + syminfo.tickerid + " | M5" +
+         "\n" + details +
+         "\nВремя закрытия бара NY: " + str.format_time(time_close, "yyyy-MM-dd HH:mm", tz) +
+         "\nВиртуальная модель, фактическое исполнение не подтверждено."
+    telegramJSON ? '{"chat_id":"' + escapeJSON(chatId) + '","text":"' + escapeJSON(body) + '"}' : body
+
+// Outcome codes: 1=TP, -1=SL, 0=TIME, 2=ambiguous, 3=data gap.
+var array<int> outcomes = array.new<int>()
+var array<float> resultsR = array.new<float>()
+recordResult(int outcome, float resultR) =>
+    array.push(outcomes, outcome)
+    array.push(resultsR, resultR)
+    if array.size(outcomes) > sampleSize
+        array.shift(outcomes)
+        array.shift(resultsR)
+
+int entryEndMinute = int(str.tonumber(str.substring(entryHours, 5, 7)))*60 + int(str.tonumber(str.substring(entryHours, 7, 9)))
+int entryStartMinute = int(str.tonumber(str.substring(entryHours, 0, 2)))*60 + int(str.tonumber(str.substring(entryHours, 2, 4)))
+if entryStartMinute < 585 or entryEndMinute > 690 or entryStartMinute >= entryEndMinute
+    runtime.error("Окно входов должно быть внутри 09:45–11:30 NY")
+
+bool inOR = not na(time(timeframe.period, "0930-0945:23456", tz))
+int nyCloseMinute = hour(time_close, tz)*60 + minute(time_close, tz)
+bool beforeExit = nyCloseMinute < 690
+bool inWindow = not na(time(timeframe.period, entryHours + ":23456", tz)) and not inOR and beforeExit
+int dayKey = year(time, tz)*10000 + month(time, tz)*100 + dayofmonth(time, tz)
+int exitTimestamp = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), 11, 30)
+
+var int orDay = na
+var int orBars = 0
+var float hi = na
+var float lo = na
+var int phase = 2
+var int side = 0
+var int breakBar = na
+var float extreme = na
+var int virtualSide = 0
+var int signalBar = na
+var int tradeDay = na
+var int tradeExitTime = na
+var float entryPrice = na
+var float hiddenSL = na
+var float hiddenTP = na
+var float initialRisk = na
+var string status = "Ждём 09:30 NY"
+var int sessions = 0
+var int completeOR = 0
+var int breakouts = 0
+var int returns = 0
+var int entries = 0
+var int touches = 0
+var int skippedBusy = 0
+var bool readyForTouch = false
+var bool waitingRejection = false
+
+bool buy = false
+bool sell = false
+bool exitSignal = false
+bool uncertain = false
+bool breakUp = false
+bool breakDown = false
+bool touched = false
+string exitReason = ""
+float exitPrice = na
+float completedR = na
+int outcomeCode = 2
+
+if barstate.isconfirmed
+    // No exit is checked on the signal bar: entry is its closing price.
+    if virtualSide != 0 and bar_index > signalBar
+        bool missingData = dayKey != tradeDay or time >= tradeExitTime
+        if missingData
+            // Unknown sequence across a missing exit bar: exclude from performance.
+            exitSignal := true
+            uncertain := true
+            exitReason := "DATA GAP: нет достоверного выхода 11:30"
+            outcomeCode := 3
+        else
+            bool gapSL = virtualSide == 1 ? open <= hiddenSL : open >= hiddenSL
+            bool gapTP = virtualSide == 1 ? open >= hiddenTP : open <= hiddenTP
+            bool hitSL = virtualSide == 1 ? low <= hiddenSL : high >= hiddenSL
+            bool hitTP = virtualSide == 1 ? high >= hiddenTP : low <= hiddenTP
+            if gapSL
+                exitSignal := true
+                exitPrice := open
+                outcomeCode := -1
+                exitReason := "SL: гэп, модельный выход по open"
+            else if gapTP
+                exitSignal := true
+                exitPrice := hiddenTP
+                outcomeCode := 1
+                exitReason := "TP: консервативный выход по цели"
+            else if hitSL and hitTP
+                exitSignal := true
+                uncertain := true
+                outcomeCode := 2
+                exitReason := "НЕОПРЕДЕЛЁННО: SL и TP в одном M5"
+            else if hitSL
+                exitSignal := true
+                exitPrice := hiddenSL
+                outcomeCode := -1
+                exitReason := "SL"
+            else if hitTP
+                exitSignal := true
+                exitPrice := hiddenTP
+                outcomeCode := 1
+                exitReason := "TP " + str.tostring(targetR) + "R"
+            else if time_close >= tradeExitTime
+                exitSignal := true
+                exitPrice := close
+                outcomeCode := 0
+                exitReason := "TIME 11:30 NY"
+        if exitSignal
+            completedR := uncertain ? na : virtualSide * (exitPrice-entryPrice) / initialRisk
+            recordResult(outcomeCode, completedR)
+            status := exitReason
+            string resultText = uncertain ? "Результат исключён из процентов и суммы R." : "Модельный результат: " + str.tostring(completedR, "#.##") + "R"
+            alert(messageBody("EXIT", exitReason + "\n" + resultText), alert.freq_all)
+            virtualSide := 0
+
+    if inOR and (na(orDay) or orDay != dayKey)
+        orDay := dayKey
+        orBars := 1
+        hi := high
+        lo := low
+        phase := 0
+        readyForTouch := false
+        waitingRejection := false
+        side := 0
+        breakBar := na
+        extreme := na
+        sessions += 1
+        status := "Строим OR 09:30–09:45 NY"
+    else if inOR
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+        orBars += 1
+
+    bool ready = orDay == dayKey and orBars == 3 and not inOR and hi > lo
+    if ready and inOR[1]
+        completeOR += 1
+
+    // New hypothesis: break OUT, retest, rejection in the breakout direction.
+    // side describes the last confirmed breakout, not an independent trend filter.
+    if ready and inWindow
+        if side == 0
+            if close > hi or close < lo
+                side := close > hi ? 1 : -1
+                breakBar := bar_index
+                readyForTouch := true
+                waitingRejection := false
+                breakouts += 1
+                breakUp := side == 1
+                breakDown := side == -1
+                status := "Пробой: ждём касание OR"
+            else
+                status := "Внутри OR: направление не выбрано"
+        else if bar_index > breakBar
+            bool oppositeBreak = side == 1 ? close < lo : close > hi
+            bool intersects = high >= lo and low <= hi
+            bool outsideSame = side == 1 ? close > hi : close < lo
+            bool fullyOutside = side == 1 ? low > hi : high < lo
+            if oppositeBreak
+                // Crossing the entire range changes context; not a rejection signal.
+                side := close > hi ? 1 : -1
+                breakBar := bar_index
+                readyForTouch := true
+                waitingRejection := false
+                breakouts += 1
+                breakUp := side == 1
+                breakDown := side == -1
+                status := "Пробой другой стороны: ждём новый ретест"
+            else
+                if readyForTouch and intersects and not waitingRejection
+                    touched := true
+                    touches += 1
+                    waitingRejection := true
+                    readyForTouch := false
+                    status := "Касание OR: ждём закрытие обратно снаружи"
+                if waitingRejection and outsideSame
+                    buy := side == 1
+                    sell := side == -1
+                    returns += 1
+                    waitingRejection := false
+                    readyForTouch := false
+                    status := buy ? "Отбой вверх" : "Отбой вниз"
+                    alert(messageBody(buy ? "СТРЕЛКА ВВЕРХ" : "СТРЕЛКА ВНИЗ", "Подтверждённый ретест. Close: " + str.tostring(close, format.mintick)), alert.freq_all)
+                    // Every rejection gets an arrow, but only one virtual trade is tracked at once.
+                    if virtualSide == 0 and not exitSignal
+                        int direction = side
+                        float candidateSL = direction == 1 ? lo-bufferTicks*syminfo.mintick : hi+bufferTicks*syminfo.mintick
+                        float riskDistance = math.abs(close-candidateSL)
+                        if riskDistance > syminfo.mintick
+                            virtualSide := direction
+                            entryPrice := close
+                            hiddenSL := candidateSL
+                            initialRisk := riskDistance
+                            hiddenTP := entryPrice+direction*targetR*initialRisk
+                            signalBar := bar_index
+                            tradeDay := dayKey
+                            tradeExitTime := exitTimestamp
+                            entries += 1
+                    else
+                        skippedBusy += 1
+                else if fullyOutside and not waitingRejection
+                    // A complete M5 candle away from OR rearms the next contact cycle.
+                    readyForTouch := true
+                    status := "Цена вне OR: ждём следующий ретест"
+
+    if ready and not inWindow and nyCloseMinute >= entryEndMinute
+        readyForTouch := false
+        waitingRejection := false
+        status := "Сессия ретестов завершена"
+
+bool drawOR = inOR or (orDay == dayKey and orBars == 3)
+plot(drawOR ? hi : na, "OR High", color.orange, 2, plot.style_linebr)
+plot(drawOR ? lo : na, "OR Low", color.aqua, 2, plot.style_linebr)
+plotshape(buy, "Отбой вверх", shape.triangleup, location.belowbar, color.lime, size=size.small)
+plotshape(sell, "Отбой вниз", shape.triangledown, location.abovebar, color.red, size=size.small)
+plotshape(exitSignal and not uncertain, "EXIT", shape.xcross, location.abovebar, color.yellow, text="EXIT", size=size.small)
+plotshape(exitSignal and uncertain, "Неопределённый выход", shape.xcross, location.abovebar, color.gray, text="EXIT ?", size=size.small)
+plotshape(diagnostics and breakUp, "Пробой вверх", shape.triangleup, location.abovebar, color.orange, size=size.tiny)
+plotshape(diagnostics and breakDown, "Пробой вниз", shape.triangledown, location.belowbar, color.orange, size=size.tiny)
+plotshape(touched, "Касание диапазона", shape.circle, location.belowbar, color.aqua, size=size.tiny)
+
+var table panel = table.new(position.top_right, 2, 13, bgcolor=color.new(color.black, 15))
+if barstate.islast
+    int n = array.size(outcomes)
+    int tpCount = 0
+    int slCount = 0
+    int timeCount = 0
+    int excluded = 0
+    int positive = 0
+    int valid = 0
+    float netR = 0
+    float peakR = 0
+    float ddR = 0
+    if n > 0
+        for i = 0 to n-1
+            int code = array.get(outcomes, i)
+            float value = array.get(resultsR, i)
+            tpCount += code == 1 ? 1 : 0
+            slCount += code == -1 ? 1 : 0
+            timeCount += code == 0 ? 1 : 0
+            if na(value)
+                excluded += 1
+            else
+                valid += 1
+                positive += value > 0 ? 1 : 0
+                netR += value
+                peakR := math.max(peakR, netR)
+                ddR := math.max(ddR, peakR-netR)
+    string tpPct = valid > 0 ? str.tostring(100.0*tpCount/valid, "#.0") + "%" : "—"
+    string winPct = valid > 0 ? str.tostring(100.0*positive/valid, "#.0") + "%" : "—"
+    array<string> names = array.from("NY OR Retest | M5", "Статус", "Сессии / полный OR*", "Касания / стрелки*", "Вирт. входы / пропуск занят*", "Завершённых в окне", "TP / SL / TIME", "Неопределённых / пропуск данных", "Достижение цели", "Положительный результат", "Сумма / среднее R", "Просадка закрытых, R", "*Вся загруженная история")
+    array<string> values = array.from(syminfo.tickerid, status, str.tostring(sessions)+" / "+str.tostring(completeOR), str.tostring(touches)+" / "+str.tostring(returns), str.tostring(entries)+" / "+str.tostring(skippedBusy), str.tostring(n)+" / "+str.tostring(sampleSize), str.tostring(tpCount)+" / "+str.tostring(slCount)+" / "+str.tostring(timeCount), str.tostring(excluded), tpPct+" ("+str.tostring(targetR)+"R)", winPct, str.tostring(netR, "#.##")+" / "+(valid > 0 ? str.tostring(netR/valid, "#.##") : "—"), str.tostring(ddR, "#.##"), "Без комиссий, спреда и реальных fills")
+    for row = 0 to 12
+        table.cell(panel, 0, row, array.get(names, row), text_color=row == 0 ? color.yellow : color.white, text_size=size.small)
+        table.cell(panel, 1, row, array.get(values, row), text_color=color.white, text_size=size.small)
+
+alertcondition(buy, "Отбой вверх", "NY OR Retest: отбой вверх | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(sell, "Отбой вниз", "NY OR Retest: отбой вниз | {{exchange}}:{{ticker}} | M5 | {{close}}")
+alertcondition(touched, "Касание OR", "NY OR Retest: касание диапазона, направление ещё не подтверждено | {{exchange}}:{{ticker}} | M5")
+alertcondition(exitSignal, "Виртуальный выход", "NY OR Retest: виртуальная позиция завершена | {{exchange}}:{{ticker}} | M5")

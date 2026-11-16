@@ -1,0 +1,13 @@
+# NY OR Retest v1.6
+
+New hypothesis, not the ORB Fade entry logic. Same one-session OR 09:30-09:45 America/New_York, standard M5. Retests allowed by default 09:45-11:30; no six-bar expiry and no 10:30 default cutoff. No carry to next day.
+
+Context = most recent confirmed close outside OR. It is called breakout direction, not an independent trend forecast. Close above OR sets up-context, below sets down-context. Crossing the entire OR to opposite side changes context without a rejection arrow. Detection starts on the bar after the breakout.
+
+Blue dot = first bar whose high-low intersects OR in a contact cycle; may close inside, without direction confirmed. Up arrow = after an upper breakout and contact, confirmed close above High. Down arrow = after a lower breakout and contact, confirmed close below Low. A touch and rejection may happen on the same completed bar. When waiting inside OR, no timeout until entry window ends. One arrow per contact cycle. A later full candle completely outside OR rearms another contact cycle. This stops repeated arrows on consecutive wicks without time spent away from the zone.
+
+No BUY/SELL words on chart. Arrows indicate the tested expected continuation direction, not a guaranteed move. Range and arrows/dots only; optional breakout diagnostics. Virtual EXIT markers remain for requested outcome statistics.
+
+All confirmed rejections get arrows, even with an active virtual position. Performance table tracks only one virtual position at a time, skips arrows while busy (or on same-bar exit), and counts those skipped events separately. Hidden stop is now at opposite OR boundary plus buffer; hidden 3R target and 11:30 time exit as in v1.5. Thus v1.5 results cannot be reused. TP/SL same-bar ambiguity/data gaps excluded from R calculations, counted separately. Entry assumed at signal close, no fees/spread. All virtual EXIT and arrow alerts use alert.freq_all INSIDE barstate.isconfirmed, allowing two distinct notifications when an old position closes and a new arrow occurs at the same bar close.
+
+TradingView: replace/add this indicator, remove previous indicator if duplicate ranges unwanted. Create new alert using any alert() call for directional arrows and virtual exits; enable mobile notifications. Telegram JSON input optional, existing chat/token setup. Touch-only notifications are available as a separate alertcondition. Recreate alerts after Inputs/code changes. No real orders or proven profitability. Pine compilation and notification delivery untested. Source consistency, source whitespace and independent retest-state tests checked.

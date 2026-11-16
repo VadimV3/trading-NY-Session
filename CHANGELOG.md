@@ -70,3 +70,10 @@
 - Chart shows range and entry/exit markers only. Added plain-text app alerts and optional Telegram JSON, no orders.
 - Preserved one-session baseline, configurable wait/window before 11:30 NY. Multi-session carry not included without defined lifetime/invalidation rules.
 - Static checks and 11 reference-model assertions passed; Pine compilation and live delivery pending.
+
+## NY OR Retest v1.6 - 2026-11-16
+
+- Separate continuation/retest hypothesis requested by user: contact dots, directional arrows, repeated contact cycles, no BUY/SELL labels or six-bar expiry.
+- Defaults retests to 09:45-11:30 NY; same-day OR only. Explicit breakout-direction context, not an independent trend detector.
+- Preserved rolling virtual statistics with new opposite-OR stop; one active position, skipped busy arrows counted. Prior Fade results do not apply.
+- Retest state scenarios passed; platform compilation pending.
